@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"github.com/ipfs/go-cid"
+	ipfslog "github.com/ipfs/go-log"
 	mh "github.com/multiformats/go-multihash"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -15,9 +16,9 @@ import (
 )
 
 func init() {
-	//if err := ipfslog.SetLogLevel("dht/RtRefreshManager", "DEBUG"); err != nil {
-	//	log.Fatalln(errors.Wrap(err, "set log level"))
-	//}
+	if err := ipfslog.SetLogLevel("dht", "DEBUG"); err != nil {
+		log.Fatalln(errors.Wrap(err, "set log level"))
+	}
 }
 
 type Content struct {
