@@ -79,9 +79,9 @@ func main() {
 
 	// provider.InitRoutingTable() // <- takes a long time
 
-	if err = requester.MonitorProviders(context.Background(), content); err != nil {
-		log.Fatalln(errors.Wrap(err, "monitor provider"))
-	}
+	//if err = requester.MonitorProviders(context.Background(), content); err != nil {
+	//	log.Fatalln(errors.Wrap(err, "monitor provider"))
+	//}
 
 	if err = provider.Provide(context.Background(), content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))

@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"contrib.go.opencensus.io/exporter/zipkin"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/routing"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
+	openzipkin "github.com/openzipkin/zipkin-go"
+	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"go.opencensus.io/trace"
 )
 
 type Provider struct {
@@ -39,7 +43,7 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	}, nil
 }
 
-func (p *Provider) Bootstrap(ctx context.Context) error{
+func (p *Provider) Bootstrap(ctx context.Context) error {
 	for _, bp := range kaddht.GetDefaultBootstrapPeerAddrInfos() {
 		log.WithField("type", "provider").Infoln("Connecting to bootstrap peer")
 		if err := p.h.Connect(ctx, bp); err != nil {
@@ -52,8 +56,22 @@ func (p *Provider) Bootstrap(ctx context.Context) error{
 func (p *Provider) InitRoutingTable() {
 	<-p.dht.RefreshRoutingTable()
 }
+
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
 	logEntry := log.WithField("type", "provider")
+
+	// Trace exporter: Zipkin
+	localEndpoint, err := openzipkin.NewEndpoint("dht_provide_measurement", "localhost:5454")
+	if err != nil {
+		log.Fatalf("Failed to create the local zipkinEndpoint: %v", err)
+	}
+	reporter := zipkinHTTP.NewReporter("http://localhost:9411/api/v2/spans")
+	ze := zipkin.NewExporter(reporter, localEndpoint)
+	trace.RegisterExporter(ze)
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
+
+	spanMap, span := InitSpanMap(ctx)
+	defer span.End()
 
 	ctx, events := routing.RegisterForQueryEvents(ctx)
 	go func() {
@@ -62,13 +80,13 @@ func (p *Provider) Provide(ctx context.Context, content *Content) error {
 			logEntry = logEntry.WithField("peer", event.ID.Pretty()[:16])
 			switch event.Type {
 			case routing.SendingQuery:
-				logEntry.Infoln("Query Event: SendingQuery")
+				spanMap.SendQuery(event.ID)
 			case routing.PeerResponse:
-				logEntry.Infoln("Query Event: PeerResponse")
+				spanMap.PeerResponse(event.ID, event.Responses)
 			case routing.FinalPeer:
 				logEntry.Infoln("Query Event: FinalPeer")
 			case routing.QueryError:
-				logEntry.Infoln("Query Event: QueryError")
+				spanMap.QueryError(event.ID, event.Extra)
 			case routing.Provider:
 				logEntry.Infoln("Query Event: Provider")
 			case routing.Value:
@@ -76,11 +94,14 @@ func (p *Provider) Provide(ctx context.Context, content *Content) error {
 			case routing.AddingPeer:
 				logEntry.Infoln("Query Event: AddingPeer")
 			case routing.DialingPeer:
-				logEntry.Infoln("Query Event: DialingPeer")
+				spanMap.DialingPeer(event.ID)
 			}
 		}
 		logEntry.Infoln("Registered for query done")
 	}()
 	logEntry.Infoln("Providing content")
-	return p.dht.Provide(ctx, content.contentID, true)
+	err = p.dht.Provide(ctx, content.contentID, true)
+
+	spanMap.StopSpans()
+	return err
 }

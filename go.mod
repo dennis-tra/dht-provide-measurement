@@ -3,6 +3,7 @@ module github.com/dennis-tra/dht-provide-measurement
 go 1.16
 
 require (
+	contrib.go.opencensus.io/exporter/zipkin v0.1.2
 	github.com/ipfs/go-cid v0.0.7
 	github.com/ipfs/go-log v1.0.5
 	github.com/ipfs/go-todocounter v0.0.2 // indirect
@@ -12,6 +13,7 @@ require (
 	github.com/libp2p/go-libp2p-routing v0.1.0 // indirect
 	github.com/libp2p/go-msgio v0.0.6
 	github.com/multiformats/go-multihash v0.0.15
+	github.com/openzipkin/zipkin-go v0.2.2
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.6.0
 	go.opencensus.io v0.23.0
