@@ -39,10 +39,10 @@ func NewRequester(ctx context.Context) (*Requester, error) {
 		return nil, errors.Wrap(err, "new libp2p host")
 	}
 
-	ms := &msgSender{
-		h:         h,
+	ms := &messageSenderImpl{
+		host:         h,
 		protocols: protocol.ConvertFromStrings([]string{"/ipfs/kad/1.0.0"}),
-		timeout:   time.Minute,
+		strmap:    make(map[peer.ID]*peerMessageSender),
 	}
 
 	pm, err := pb.NewProtocolMessenger(ms)

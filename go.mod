@@ -3,6 +3,7 @@ module github.com/dennis-tra/dht-provide-measurement
 go 1.16
 
 require (
+	bou.ke/monkey v1.0.2
 	contrib.go.opencensus.io/exporter/zipkin v0.1.2
 	github.com/ipfs/go-cid v0.0.7
 	github.com/ipfs/go-log v1.0.5

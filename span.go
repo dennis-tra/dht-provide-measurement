@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/libp2p/go-libp2p-core/peer"
+	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	log "github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
 	"strings"
@@ -33,7 +34,6 @@ func InitSpanMap(ctx context.Context) (SpanMap, *trace.Span) {
 }
 
 func (sm *SpanMap) SendQuery(id peer.ID) {
-	log.Infoln("Send query")
 	sm.lk.Lock()
 	defer sm.lk.Unlock()
 
@@ -52,6 +52,40 @@ func (sm *SpanMap) SendQuery(id peer.ID) {
 	sm.m[id] = sme
 }
 
+func (sm *SpanMap) SendRequest(id peer.ID, pmes *pb.Message) {
+	sm.lk.Lock()
+	defer sm.lk.Unlock()
+
+	sme, found := sm.m[id]
+	if found {
+		sme.span.End()
+	} else {
+		sme = SpanMapEntry{
+			ctx:  sm.rCtx,
+			span: sm.span,
+		}
+	}
+	sme.ctx, sme.span = trace.StartSpan(sme.ctx, "sending_query")
+	sme.status = "sending_query"
+	sme.span.AddAttributes(trace.StringAttribute("peerID", id.Pretty()[:16]))
+	sm.m[id] = sme
+}
+
+func (sm *SpanMap) AddProvider(id peer.ID, msgType string) *trace.Span {
+	sm.lk.Lock()
+	defer sm.lk.Unlock()
+	sme, found := sm.m[id]
+	if !found {
+		panic("peer response without query")
+	}
+
+	sme.ctx, sme.span = trace.StartSpan(sme.ctx, msgType)
+	sme.status = msgType
+	sme.span.AddAttributes(trace.StringAttribute("peerID", id.Pretty()[:16]))
+	sm.m[id] = sme
+	return sme.span
+}
+
 func (sm *SpanMap) PeerResponse(id peer.ID, peers []*peer.AddrInfo) {
 	sm.lk.Lock()
 	defer sm.lk.Unlock()
@@ -63,22 +97,13 @@ func (sm *SpanMap) PeerResponse(id peer.ID, peers []*peer.AddrInfo) {
 	ids := []string{}
 	for _, pi := range peers {
 		ids = append(ids, pi.ID.String()[:16])
-		if f, found := sm.m[pi.ID]; found {
-			sme.span.AddLink(trace.Link{
-				TraceID: f.span.SpanContext().TraceID,
-				SpanID:  f.span.SpanContext().SpanID,
-				Type:    trace.LinkTypeChild,
-				Attributes: map[string]interface{}{
-					"reason": "peer replied same closer peer",
-				},
-			})
+		if _, found := sm.m[pi.ID]; found {
 			continue
 		}
 		nsme := SpanMapEntry{}
 		nsme.ctx, nsme.span = trace.StartSpan(sme.ctx, "awaiting_use")
 		nsme.status = "awaiting_use"
 		nsme.span.AddAttributes(trace.StringAttribute("peerID", pi.ID.Pretty()[:16]))
-		nsme.span.AddAttributes(trace.StringAttribute("responder", id.Pretty()[:16]))
 		log.Infoln("Peer response fill map")
 		sm.m[pi.ID] = nsme
 	}
@@ -135,7 +160,7 @@ func (sm *SpanMap) StopSpans() {
 	defer sm.lk.Unlock()
 
 	for _, entry := range sm.m {
-		if entry.status == "awaiting_use" {
+		if strings.HasPrefix(entry.status, "awaiting_use") {
 			continue
 		}
 		entry.span.SetStatus(

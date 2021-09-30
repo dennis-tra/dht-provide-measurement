@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"contrib.go.opencensus.io/exporter/zipkin"
 	"crypto/rand"
 	"crypto/sha256"
 	"github.com/ipfs/go-cid"
-	ipfslog "github.com/ipfs/go-log"
+	openzipkin "github.com/openzipkin/zipkin-go"
+	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
+	"go.opencensus.io/trace"
+
+	//ipfslog "github.com/ipfs/go-log"
 	mh "github.com/multiformats/go-multihash"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -16,9 +21,9 @@ import (
 )
 
 func init() {
-	if err := ipfslog.SetLogLevel("dht", "DEBUG"); err != nil {
-		log.Fatalln(errors.Wrap(err, "set log level"))
-	}
+	//if err := ipfslog.SetLogLevel("dht", "DEBUG"); err != nil {
+	//	log.Fatalln(errors.Wrap(err, "set log level"))
+	//}
 }
 
 type Content struct {
@@ -50,6 +55,14 @@ func NewRandomContent() (*Content, error) {
 
 func main() {
 	ctx := context.Background()
+
+	localEndpoint, err := openzipkin.NewEndpoint("dht", "localhost:5454")
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "open zipkin endpoint"))
+	}
+	reporter := zipkinHTTP.NewReporter("http://localhost:9411/api/v2/spans")
+	trace.RegisterExporter(zipkin.NewExporter(reporter, localEndpoint))
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
 
 	content, err := NewRandomContent()
 	if err != nil {
@@ -84,10 +97,10 @@ func main() {
 	//	log.Fatalln(errors.Wrap(err, "monitor provider"))
 	//}
 
-	if err = provider.Provide(context.Background(), content); err != nil {
+	ctx = context.WithValue(context.Background(), "realm", "user")
+	if err = provider.Provide(ctx, content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))
 	}
-	log.Infoln("Provided record!")
 
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)

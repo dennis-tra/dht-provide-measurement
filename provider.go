@@ -1,15 +1,16 @@
 package main
 
 import (
+	"bou.ke/monkey"
 	"context"
-	"contrib.go.opencensus.io/exporter/zipkin"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-core/protocol"
 	"github.com/libp2p/go-libp2p-core/routing"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
-	openzipkin "github.com/openzipkin/zipkin-go"
-	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
+	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
@@ -26,8 +27,27 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 		return nil, errors.Wrap(err, "generate key pair")
 	}
 
+	ms := &messageSenderImpl{
+		protocols: protocol.ConvertFromStrings([]string{"/ipfs/kad/1.0.0"}),
+		strmap:    make(map[peer.ID]*peerMessageSender),
+	}
+
+	pm, err := pb.NewProtocolMessenger(ms)
+	if err != nil {
+		return nil, err
+	}
+
+	monkey.Patch(pb.NewProtocolMessenger, func(msgSender pb.MessageSender, opts ...pb.ProtocolMessengerOption) (*pb.ProtocolMessenger, error) {
+		for _, o := range opts {
+			if err := o(pm); err != nil {
+				return nil, err
+			}
+		}
+		return pm, nil
+	})
+
 	var dht *kaddht.IpfsDHT
-	node, err := libp2p.New(ctx,
+	h, err := libp2p.New(ctx,
 		libp2p.Identity(key),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			dht, err = kaddht.New(ctx, h)
@@ -36,9 +56,10 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "new libp2p host")
 	}
+	ms.host = h
 
 	return &Provider{
-		h:   node,
+		h:   h,
 		dht: dht,
 	}, nil
 }
@@ -57,27 +78,19 @@ func (p *Provider) InitRoutingTable() {
 	<-p.dht.RefreshRoutingTable()
 }
 
+var spanMap SpanMap
+
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
 	logEntry := log.WithField("type", "provider")
 
-	// Trace exporter: Zipkin
-	localEndpoint, err := openzipkin.NewEndpoint("dht_provide_measurement", "localhost:5454")
-	if err != nil {
-		log.Fatalf("Failed to create the local zipkinEndpoint: %v", err)
-	}
-	reporter := zipkinHTTP.NewReporter("http://localhost:9411/api/v2/spans")
-	ze := zipkin.NewExporter(reporter, localEndpoint)
-	trace.RegisterExporter(ze)
-	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
-
-	spanMap, span := InitSpanMap(ctx)
+	var span *trace.Span
+	spanMap, span = InitSpanMap(ctx)
 	defer span.End()
 
 	ctx, events := routing.RegisterForQueryEvents(ctx)
 	go func() {
 		logEntry.Infoln("Registered for query")
 		for event := range events {
-			logEntry = logEntry.WithField("peer", event.ID.Pretty()[:16])
 			switch event.Type {
 			case routing.SendingQuery:
 				spanMap.SendQuery(event.ID)
@@ -94,7 +107,8 @@ func (p *Provider) Provide(ctx context.Context, content *Content) error {
 		logEntry.Infoln("Registered for query done")
 	}()
 	logEntry.Infoln("Providing content")
-	err = p.dht.Provide(ctx, content.contentID, true)
+
+	err := p.dht.Provide(ctx, content.contentID, true)
 
 	spanMap.StopSpans()
 	return err
