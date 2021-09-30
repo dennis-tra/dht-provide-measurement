@@ -83,18 +83,12 @@ func (p *Provider) Provide(ctx context.Context, content *Content) error {
 				spanMap.SendQuery(event.ID)
 			case routing.PeerResponse:
 				spanMap.PeerResponse(event.ID, event.Responses)
-			case routing.FinalPeer:
-				logEntry.Infoln("Query Event: FinalPeer")
 			case routing.QueryError:
 				spanMap.QueryError(event.ID, event.Extra)
-			case routing.Provider:
-				logEntry.Infoln("Query Event: Provider")
-			case routing.Value:
-				logEntry.Infoln("Query Event: Value")
-			case routing.AddingPeer:
-				logEntry.Infoln("Query Event: AddingPeer")
 			case routing.DialingPeer:
 				spanMap.DialingPeer(event.ID)
+			default:
+				panic(event.Type)
 			}
 		}
 		logEntry.Infoln("Registered for query done")

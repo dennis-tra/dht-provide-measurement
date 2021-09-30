@@ -11,46 +11,43 @@ import (
 
 type SpanMap struct {
 	rCtx context.Context // root context
+	span *trace.Span
 	lk   sync.RWMutex
 	m    map[peer.ID]SpanMapEntry
 }
 
 type SpanMapEntry struct {
-	pCtx context.Context // parent context
-	ctx  context.Context
-	span *trace.Span
+	ctx    context.Context
+	span   *trace.Span
+	status string
 }
 
 func InitSpanMap(ctx context.Context) (SpanMap, *trace.Span) {
 	ctx, span := trace.StartSpan(ctx, "provide")
 	return SpanMap{
 		rCtx: ctx,
+		span: span,
 		lk:   sync.RWMutex{},
 		m:    map[peer.ID]SpanMapEntry{},
 	}, span
 }
 
 func (sm *SpanMap) SendQuery(id peer.ID) {
+	log.Infoln("Send query")
 	sm.lk.Lock()
 	defer sm.lk.Unlock()
 
-	var sCtx context.Context // span ctx
 	sme, found := sm.m[id]
 	if found {
-		if sme.ctx != nil {
-			sCtx = sme.ctx
-		} else {
-			sCtx = sme.pCtx
-		}
-		sme.span.End() // end a dial process
+		sme.span.End()
 	} else {
-		sCtx = sm.rCtx
 		sme = SpanMapEntry{
-			pCtx: sm.rCtx,
+			ctx:  sm.rCtx,
+			span: sm.span,
 		}
 	}
-	log.Infoln("Send query")
-	sme.ctx, sme.span = trace.StartSpan(sCtx, "sending_query")
+	sme.ctx, sme.span = trace.StartSpan(sme.ctx, "sending_query")
+	sme.status = "sending_query"
 	sme.span.AddAttributes(trace.StringAttribute("peerID", id.Pretty()[:16]))
 	sm.m[id] = sme
 }
@@ -62,17 +59,24 @@ func (sm *SpanMap) PeerResponse(id peer.ID, peers []*peer.AddrInfo) {
 	if !found {
 		panic("peer response without query")
 	}
-	ids := []string{}
 
+	ids := []string{}
 	for _, pi := range peers {
 		ids = append(ids, pi.ID.String()[:16])
-		if _, found := sm.m[pi.ID]; found {
+		if f, found := sm.m[pi.ID]; found {
+			sme.span.AddLink(trace.Link{
+				TraceID: f.span.SpanContext().TraceID,
+				SpanID:  f.span.SpanContext().SpanID,
+				Type:    trace.LinkTypeChild,
+				Attributes: map[string]interface{}{
+					"reason": "peer replied same closer peer",
+				},
+			})
 			continue
 		}
-		nsme := SpanMapEntry{
-			pCtx: sme.ctx,
-		}
+		nsme := SpanMapEntry{}
 		nsme.ctx, nsme.span = trace.StartSpan(sme.ctx, "awaiting_use")
+		nsme.status = "awaiting_use"
 		nsme.span.AddAttributes(trace.StringAttribute("peerID", pi.ID.Pretty()[:16]))
 		nsme.span.AddAttributes(trace.StringAttribute("responder", id.Pretty()[:16]))
 		log.Infoln("Peer response fill map")
@@ -83,25 +87,21 @@ func (sm *SpanMap) PeerResponse(id peer.ID, peers []*peer.AddrInfo) {
 }
 
 func (sm *SpanMap) DialingPeer(id peer.ID) {
+	log.Infoln("Dial Peer")
 	sm.lk.Lock()
 	defer sm.lk.Unlock()
 
-	var sCtx context.Context // span ctx
 	sme, found := sm.m[id]
 	if found {
-		if sme.ctx != nil {
-			sCtx = sme.ctx
-		} else {
-			sCtx = sme.pCtx
-		}
+		sme.span.End()
 	} else {
-		sCtx = sm.rCtx
 		sme = SpanMapEntry{
-			pCtx: sm.rCtx,
+			ctx:  sm.rCtx,
+			span: sm.span,
 		}
 	}
-	log.Infoln("Dial Peer")
-	sme.ctx, sme.span = trace.StartSpan(sCtx, "dialing_peer")
+	sme.ctx, sme.span = trace.StartSpan(sme.ctx, "dialing_peer")
+	sme.status = "dialing_peer"
 	sme.span.AddAttributes(trace.StringAttribute("peerID", id.Pretty()[:16]))
 	sm.m[id] = sme
 }
@@ -113,10 +113,18 @@ func (sm *SpanMap) QueryError(id peer.ID, extra string) {
 	if !found {
 		panic("peer response without query")
 	}
-	sme.span.SetStatus(trace.Status{
-		Code:    trace.StatusCodeInternal,
-		Message: extra,
-	})
+
+	if extra == "context canceled" {
+		sme.span.SetStatus(trace.Status{
+			Code:    trace.StatusCodeCancelled,
+			Message: extra,
+		})
+	} else {
+		sme.span.SetStatus(trace.Status{
+			Code:    trace.StatusCodeInternal,
+			Message: extra,
+		})
+	}
 	sme.span.End()
 	log.Infoln("Send query")
 	sm.m[id] = sme
@@ -127,15 +135,14 @@ func (sm *SpanMap) StopSpans() {
 	defer sm.lk.Unlock()
 
 	for _, entry := range sm.m {
-		if entry.span != nil {
-			entry.span.SetStatus(
-				trace.Status{
-					Code:    trace.StatusCodeAborted,
-					Message: "stopped after provide resolved",
-				})
-			entry.span.End()
-		} else {
-			log.Infoln("span nil")
+		if entry.status == "awaiting_use" {
+			continue
 		}
+		entry.span.SetStatus(
+			trace.Status{
+				Code:    trace.StatusCodeAborted,
+				Message: "stopped after provide resolved",
+			})
+		entry.span.End()
 	}
 }
