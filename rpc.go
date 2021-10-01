@@ -71,16 +71,35 @@ func (m *messageSenderImpl) OnDisconnect(ctx context.Context, p peer.ID) {
 // SendRequest sends out a request, but also makes sure to
 // measure the RTT for latency measurements.
 func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb.Message) (*pb.Message, error) {
-	event := &SendRequestEvent{
-		ID:      p,
-		Request: pmes,
-		Start:   time.Now(),
+	if isProvideContext(ctx) {
+		m.eventHub.PushEvent(&SendRequestStart{
+			BaseEvent: BaseEvent{
+				ID:   p,
+				Time: time.Now(),
+			},
+			Request: pmes,
+		})
 	}
-
+	endEvent := &SendRequestEnd{
+		BaseEvent: BaseEvent{
+			ID: p,
+		},
+	}
 	defer func() {
 		if isProvideContext(ctx) {
-			event.End = time.Now()
-			m.eventHub.PushEvent(event)
+			endEvent.Time = time.Now()
+			m.eventHub.PushEvent(endEvent)
+			if endEvent.Error() == nil && endEvent.Response.Type == pb.Message_FIND_NODE {
+				for _, pi := range pb.PBPeersToPeerInfos(endEvent.Response.CloserPeers) {
+					m.eventHub.PushEvent(&DiscoveredPeer{
+						BaseEvent: BaseEvent{
+							ID:   p,
+							Time: time.Now(),
+						},
+						Discovered: pi.ID,
+					})
+				}
+			}
 		}
 	}()
 
@@ -93,7 +112,7 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentRequestErrors.M(1),
 		)
 		logger.Debugw("request failed to open message sender", "error", err, "to", p)
-		event.Error = err
+		endEvent.Err = err
 		return nil, err
 	}
 
@@ -106,10 +125,10 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentRequestErrors.M(1),
 		)
 		logger.Debugw("request failed", "error", err, "to", p)
-		event.Error = err
+		endEvent.Err = err
 		return nil, err
 	}
-	event.Response = rpmes
+	endEvent.Response = rpmes
 
 	stats.Record(ctx,
 		metrics.SentRequests.M(1),
@@ -122,16 +141,24 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 
 // SendMessage sends out a message
 func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb.Message) error {
-	event := &SendMessageEvent{
-		ID:      p,
-		Message: pmes,
-		Start:   time.Now(),
+	if isProvideContext(ctx) {
+		m.eventHub.PushEvent(&SendMessageStart{
+			BaseEvent: BaseEvent{
+				ID:   p,
+				Time: time.Now(),
+			},
+			Message: pmes,
+		})
 	}
-
+	endEvent := &SendMessageEnd{
+		BaseEvent: BaseEvent{
+			ID: p,
+		},
+	}
 	defer func() {
 		if isProvideContext(ctx) {
-			event.End = time.Now()
-			m.eventHub.PushEvent(event)
+			endEvent.Time = time.Now()
+			m.eventHub.PushEvent(endEvent)
 		}
 	}()
 
@@ -144,7 +171,7 @@ func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentMessageErrors.M(1),
 		)
 		logger.Debugw("message failed to open message sender", "error", err, "to", p)
-		event.Error = err
+		endEvent.Err = err
 		return err
 	}
 
@@ -154,7 +181,7 @@ func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentMessageErrors.M(1),
 		)
 		logger.Debugw("message failed", "error", err, "to", p)
-		event.Error = err
+		endEvent.Err = err
 		return err
 	}
 
@@ -172,7 +199,7 @@ func (m *messageSenderImpl) messageSenderForPeer(ctx context.Context, p peer.ID)
 		m.smlk.Unlock()
 		return ms, nil
 	}
-	ms = &peerMessageSender{p: p, m: m, lk: NewCtxMutex()}
+	ms = &peerMessageSender{p: p, m: m, lk: NewCtxMutex(), eh: m.eventHub}
 	m.strmap[p] = ms
 	m.smlk.Unlock()
 
@@ -204,6 +231,7 @@ type peerMessageSender struct {
 	lk CtxMutex
 	p  peer.ID
 	m  *messageSenderImpl
+	eh *EventHub
 
 	invalid   bool
 	singleMes int
@@ -234,8 +262,29 @@ func (ms *peerMessageSender) prepOrInvalidate(ctx context.Context) error {
 }
 
 func (ms *peerMessageSender) prep(ctx context.Context) error {
+	if isProvideContext(ctx) {
+		ms.eh.PushEvent(&OpenStreamStart{
+			BaseEvent: BaseEvent{
+				ID:   ms.p,
+				Time: time.Now(),
+			},
+		})
+	}
+	endEvent := &OpenStreamEnd{
+		BaseEvent: BaseEvent{
+			ID: ms.p,
+		},
+	}
+	defer func() {
+		if isProvideContext(ctx) {
+			endEvent.Time = time.Now()
+			ms.eh.PushEvent(endEvent)
+		}
+	}()
 	if ms.invalid {
-		return fmt.Errorf("message sender has been invalidated")
+		err := fmt.Errorf("message sender has been invalidated")
+		endEvent.Err = err
+		return err
 	}
 	if ms.s != nil {
 		return nil
@@ -246,6 +295,7 @@ func (ms *peerMessageSender) prep(ctx context.Context) error {
 	// backwards compatibility reasons).
 	nstr, err := ms.m.host.NewStream(ctx, ms.p, ms.m.protocols...)
 	if err != nil {
+		endEvent.Err = err
 		return err
 	}
 

@@ -54,6 +54,7 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	var dht *kaddht.IpfsDHT
 	h, err := libp2p.New(ctx,
 		libp2p.Identity(key),
+		libp2p.DefaultListenAddrs,
 		libp2p.Transport(NewTCPTransport(eh)),
 		libp2p.Transport(NewWSTransport(eh)),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
@@ -64,8 +65,6 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 		return nil, errors.Wrap(err, "new libp2p host")
 	}
 	ms.host = h
-
-	eh.RegisterForEvents(ctx, h)
 
 	return &Provider{
 		h:   h,
@@ -89,6 +88,9 @@ func (p *Provider) InitRoutingTable() {
 }
 
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
-	log.WithField("type", "provider").Infoln("Providing content")
-	return p.dht.Provide(ctx, content.contentID, true)
+	ctx = p.eh.RegisterForEvents(ctx, p.h)
+	err := p.dht.Provide(ctx, content.contentID, true)
+	p.eh.Stop(p.h)
+	p.eh.Serialize(content)
+	return err
 }

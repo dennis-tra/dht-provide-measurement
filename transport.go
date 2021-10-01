@@ -27,19 +27,24 @@ func NewTCPTransport(eh *EventHub) func(upgrader *tptu.Upgrader) *TCPTransport {
 }
 
 func (t *TCPTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (transport.CapableConn, error) {
-	start := time.Now()
+	t.eventHub.PushEvent(&DialStart{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Transport: "tcp",
+		Maddr:     raddr,
+	})
 	dial, err := t.transport.Dial(ctx, raddr, p)
-	if isProvideContext(ctx) {
-		event := &DialEvent{
-			Transport: "tcp",
-			ID:        p,
-			Maddr:     raddr,
-			Error:     err,
-			Start:     start,
-			End:       time.Now(),
-		}
-		t.eventHub.PushEvent(event)
-	}
+	t.eventHub.PushEvent(&DialEnd{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Transport: "tcp",
+		Maddr:     raddr,
+		Err:       err,
+	})
 	return dial, err
 }
 
@@ -74,19 +79,24 @@ func NewWSTransport(eh *EventHub) func(upgrader *tptu.Upgrader) *WSTransport {
 }
 
 func (ws *WSTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (transport.CapableConn, error) {
-	start := time.Now()
+	ws.eventHub.PushEvent(&DialStart{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Transport: "ws",
+		Maddr:     raddr,
+	})
 	dial, err := ws.transport.Dial(ctx, raddr, p)
-	if isProvideContext(ctx) {
-		event := &DialEvent{
-			Transport: "ws",
-			ID:        p,
-			Maddr:     raddr,
-			Error:     err,
-			Start:     start,
-			End:       time.Now(),
-		}
-		ws.eventHub.PushEvent(event)
-	}
+	ws.eventHub.PushEvent(&DialEnd{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Transport: "ws",
+		Maddr:     raddr,
+		Err:       err,
+	})
 	return dial, err
 }
 

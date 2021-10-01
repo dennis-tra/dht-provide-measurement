@@ -14,15 +14,13 @@ import (
 	"go.opencensus.io/trace"
 )
 
-type contextKey struct{}
-
 func withProvideContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, contextKey{}, "provide")
+	return context.WithValue(ctx, "provide-context", true)
 }
 
 func isProvideContext(ctx context.Context) bool {
-	val := ctx.Value(contextKey{})
-	return val == "provide"
+	val := ctx.Value("provide-context")
+	return val == true
 }
 
 func main() {
@@ -43,8 +41,7 @@ func main() {
 		log.Fatalln(errors.Wrap(err, "bootstrap provider"))
 	}
 
-	// To identify all relevant calls we mark this context
-	if err = provider.Provide(withProvideContext(ctx), content); err != nil {
+	if err = provider.Provide(ctx, content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))
 	}
 
