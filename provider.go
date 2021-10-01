@@ -6,6 +6,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	"github.com/libp2p/go-libp2p-core/routing"
@@ -49,6 +50,8 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	var dht *kaddht.IpfsDHT
 	h, err := libp2p.New(ctx,
 		libp2p.Identity(key),
+		libp2p.Transport(NewTCPTransport),
+		libp2p.Transport(NewWSTransport),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			dht, err = kaddht.New(ctx, h)
 			return dht, err
@@ -58,6 +61,15 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	}
 	ms.host = h
 
+	notifere := &network.NotifyBundle{
+		ConnectedF: func(n network.Network, conn network.Conn) {
+			log.WithField("id", conn.RemotePeer().Pretty()[:16]).Infoln("Connected!")
+		},
+		OpenedStreamF: func(n network.Network, stream network.Stream) {
+			log.WithField("id", stream.Conn().RemotePeer().Pretty()[:16]).Infoln("Opened stream")
+		},
+	}
+	h.Network().Notify(notifere)
 	return &Provider{
 		h:   h,
 		dht: dht,

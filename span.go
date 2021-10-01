@@ -112,7 +112,7 @@ func (sm *SpanMap) PeerResponse(id peer.ID, peers []*peer.AddrInfo) {
 }
 
 func (sm *SpanMap) DialingPeer(id peer.ID) {
-	log.Infoln("Dial Peer")
+	log.WithField("id", id.Pretty()[:16]).Infoln("Dial Peer")
 	sm.lk.Lock()
 	defer sm.lk.Unlock()
 

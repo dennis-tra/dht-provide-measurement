@@ -2,23 +2,20 @@ package main
 
 import (
 	"context"
-	"contrib.go.opencensus.io/exporter/zipkin"
-	"crypto/rand"
-	"crypto/sha256"
-	"github.com/ipfs/go-cid"
-	openzipkin "github.com/openzipkin/zipkin-go"
-	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
-	"go.opencensus.io/trace"
-
-	//ipfslog "github.com/ipfs/go-log"
-	mh "github.com/multiformats/go-multihash"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"contrib.go.opencensus.io/exporter/zipkin"
+	openzipkin "github.com/openzipkin/zipkin-go"
+	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+	"go.opencensus.io/trace"
+	"golang.org/x/sync/errgroup"
 )
+
+type contextKey struct{}
 
 func init() {
 	//if err := ipfslog.SetLogLevel("dht", "DEBUG"); err != nil {
@@ -26,43 +23,17 @@ func init() {
 	//}
 }
 
-type Content struct {
-	raw       []byte
-	mhash     mh.Multihash
-	contentID cid.Cid
+func withProvideContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextKey{}, "provide")
 }
 
-func NewRandomContent() (*Content, error) {
-	raw := make([]byte, 1024)
-	_, err := rand.Read(raw)
-	if err != nil {
-		return nil, errors.Wrap(err, "read rand data")
-	}
-	hash := sha256.New()
-	hash.Write(raw)
-
-	mhash, err := mh.Encode(hash.Sum(nil), mh.SHA2_256)
-	if err != nil {
-		return nil, errors.Wrap(err, "encode multi hash")
-	}
-
-	return &Content{
-		raw:       raw,
-		mhash:     mhash,
-		contentID: cid.NewCidV0(mhash),
-	}, nil
+func isProvideContext(ctx context.Context) bool {
+	val := ctx.Value(contextKey{})
+	return val == "provide"
 }
 
 func main() {
 	ctx := context.Background()
-
-	localEndpoint, err := openzipkin.NewEndpoint("dht", "localhost:5454")
-	if err != nil {
-		log.Fatalln(errors.Wrap(err, "open zipkin endpoint"))
-	}
-	reporter := zipkinHTTP.NewReporter("http://localhost:9411/api/v2/spans")
-	trace.RegisterExporter(zipkin.NewExporter(reporter, localEndpoint))
-	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
 
 	content, err := NewRandomContent()
 	if err != nil {
@@ -75,18 +46,18 @@ func main() {
 		log.Fatalln(errors.Wrap(err, "new provider"))
 	}
 
-	requester, err := NewRequester(ctx)
-	if err != nil {
-		log.Fatalln(errors.Wrap(err, "new requester"))
-	}
+	//requester, err := NewRequester(ctx)
+	//if err != nil {
+	//	log.Fatalln(errors.Wrap(err, "new requester"))
+	//}
 
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		return provider.Bootstrap(ctx)
 	})
-	group.Go(func() error {
-		return requester.Bootstrap(ctx)
-	})
+	//group.Go(func() error {
+	//	return requester.Bootstrap(ctx)
+	//})
 	if err = group.Wait(); err != nil {
 		log.Fatalln(errors.Wrap(err, "bootstrap err group"))
 	}
@@ -97,8 +68,8 @@ func main() {
 	//	log.Fatalln(errors.Wrap(err, "monitor provider"))
 	//}
 
-	ctx = context.WithValue(context.Background(), "realm", "user")
-	if err = provider.Provide(ctx, content); err != nil {
+	// To identify all relevant calls we mark this context
+	if err = provider.Provide(withProvideContext(ctx), content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))
 	}
 
@@ -116,4 +87,14 @@ func main() {
 	log.Infoln("Awaiting user signal")
 	<-done
 	log.Infoln("Exiting")
+}
+
+func initZipkin() {
+	zipkinep, err := openzipkin.NewEndpoint("dht", "localhost:5454")
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "open zipkin endpoint"))
+	}
+	reporter := zipkinHTTP.NewReporter("http://localhost:9411/api/v2/spans")
+	trace.RegisterExporter(zipkin.NewExporter(reporter, zipkinep))
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
 }
