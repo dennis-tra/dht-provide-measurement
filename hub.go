@@ -334,3 +334,16 @@ type DiscoveredPeer struct {
 	BaseEvent
 	Discovered peer.ID
 }
+
+type MonitorProviderStart struct {
+	BaseEvent
+}
+
+type MonitorProviderEnd struct {
+	BaseEvent
+	Err error
+}
+
+func (e *MonitorProviderEnd) Error() error {
+	return e.Err
+}

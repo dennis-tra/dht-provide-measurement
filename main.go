@@ -6,6 +6,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+
 	"contrib.go.opencensus.io/exporter/zipkin"
 	openzipkin "github.com/openzipkin/zipkin-go"
 	zipkinHTTP "github.com/openzipkin/zipkin-go/reporter/http"
@@ -37,11 +39,27 @@ func main() {
 		log.Fatalln(errors.Wrap(err, "new provider"))
 	}
 
-	if err = provider.Bootstrap(ctx); err != nil {
-		log.Fatalln(errors.Wrap(err, "bootstrap provider"))
+	requester, err := NewRequester(ctx)
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "new requester"))
 	}
 
-	if err = provider.Provide(ctx, content); err != nil {
+	group, ctx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		return provider.Bootstrap(ctx)
+	})
+	group.Go(func() error {
+		return requester.Bootstrap(ctx)
+	})
+	if err = group.Wait(); err != nil {
+		log.Fatalln(errors.Wrap(err, "bootstrap err group"))
+	}
+
+	if err = requester.MonitorProviders(context.Background(), content, provider.eh); err != nil {
+		log.Fatalln(errors.Wrap(err, "monitor provider"))
+	}
+
+	if err = provider.Provide(context.Background(), content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))
 	}
 

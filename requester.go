@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"time"
+
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
@@ -12,8 +16,6 @@ import (
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"sync"
-	"time"
 )
 
 type Requester struct {
@@ -40,7 +42,7 @@ func NewRequester(ctx context.Context) (*Requester, error) {
 	}
 
 	ms := &messageSenderImpl{
-		host:         h,
+		host:      h,
 		protocols: protocol.ConvertFromStrings([]string{"/ipfs/kad/1.0.0"}),
 		strmap:    make(map[peer.ID]*peerMessageSender),
 	}
@@ -66,7 +68,7 @@ func (p *Requester) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (p *Requester) MonitorProviders(ctx context.Context, content *Content) error {
+func (p *Requester) MonitorProviders(ctx context.Context, content *Content, eh *EventHub) error {
 	logEntry := log.WithField("type", "requester")
 	logEntry.Infoln("Getting closest peers")
 	closest, err := p.dht.GetClosestPeers(ctx, string(content.contentID.Hash()))
@@ -74,34 +76,6 @@ func (p *Requester) MonitorProviders(ctx context.Context, content *Content) erro
 		return errors.Wrap(err, "get closest peers")
 	}
 	logEntry.Infof("Found %d peers", len(closest))
-
-	// TODO: Are we actually connected to the closest peers?
-	//var wg sync.WaitGroup
-	//for _, c := range closest {
-	//	wg.Add(1)
-	//	go func(c peer.ID) {
-	//		defer wg.Done()
-	//		logEntry = logEntry.WithField("targetID", c.Pretty()[:16])
-	//		logEntry.Infoln("Establish connection to peer...")
-	//		var pi peer.AddrInfo
-	//		if pi = p.dht.FindLocal(c); pi.ID != "" {
-	//			logEntry.Infoln("Already connected!")
-	//			return
-	//		}
-	//		logEntry.Infoln("Looking for multi addresses")
-	//		pi, err = p.dht.FindPeer(ctx, c)
-	//		if err != nil {
-	//			logEntry.WithError(err).Warnln("Could not find peer")
-	//			return
-	//		}
-	//		logEntry.Infoln("Connecting to peer")
-	//		if err = p.h.Connect(ctx, pi); err != nil {
-	//			logEntry.WithError(err).Warnln("Could not connect to peer")
-	//			return
-	//		}
-	//	}(c)
-	//}
-	//wg.Wait()
 
 	logEntry.Infof("Starting monitoring")
 	go func() {
@@ -112,17 +86,46 @@ func (p *Requester) MonitorProviders(ctx context.Context, content *Content) erro
 			go func(peerID peer.ID) {
 				defer wg.Done()
 
-				logEntry2 := logEntry.WithField("targetID", peerID.Pretty()[:16])
+				logEntry2 := logEntry.WithField("targetID", peerID.Pretty()[:16]).WithField("count", len(closest))
+
 				for range time.Tick(time.Second) {
 					logEntry2.Infoln("Getting providers...")
+
+					eh.PushEvent(&MonitorProviderStart{
+						BaseEvent: BaseEvent{
+							ID:   peerID,
+							Time: time.Now(),
+						},
+					})
 					provs, _, err := p.pm.GetProviders(ctx, peerID, content.mhash)
 					if err != nil {
 						logEntry2.WithError(err).Warnln("Could not get providers")
+						eh.PushEvent(&MonitorProviderEnd{
+							BaseEvent: BaseEvent{
+								ID:   peerID,
+								Time: time.Now(),
+							},
+							Err: err,
+						})
 						return
 					}
 					if len(provs) > 0 {
+						eh.PushEvent(&MonitorProviderEnd{
+							BaseEvent: BaseEvent{
+								ID:   peerID,
+								Time: time.Now(),
+							},
+						})
 						logEntry2.Infoln("Found provider record!")
 						return
+					} else {
+						eh.PushEvent(&MonitorProviderEnd{
+							BaseEvent: BaseEvent{
+								ID:   peerID,
+								Time: time.Now(),
+							},
+							Err: fmt.Errorf("not found"),
+						})
 					}
 				}
 			}(c)

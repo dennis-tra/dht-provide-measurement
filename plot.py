@@ -1,24 +1,7 @@
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
 events = pd.read_csv('plot_data.csv')
-
-# plt.xlim(0, 90000)
-# for index, row in events.iterrows():
-#     distance = int(row['distance'], base=16)
-#     distance_norm = distance / 2**256
-#     plt.axhline(y=distance_norm, xmin=row['start']/90000, xmax=row['end']/90000, color=row['color'], linestyle='-')
-# plt.yscale('log')
-# plt.show()
-# import plotly.express as px
-# data_canada = px.data.gapminder().query("country == 'Canada'")
-# fig = px.bar(data_canada, x='year', y='pop')
-# fig.add_hline(y=0.9)
-# fig.show()
-
-import plotly.express as px
 
 norm_distance = []
 for index, row in events.iterrows():
@@ -26,11 +9,9 @@ for index, row in events.iterrows():
     norm_distance += [distance / 2 ** 256]
 events['norm_distance'] = norm_distance
 
-# events = events[events["type"] != "*main.OpenStreamStart"]
-# events = events[events["type"] != "*main.OpenStreamEnd"]
-events = events[events["type"] != "*main.OpenedStream"]
+# events = events[events["type"] != "*main.OpenedStream"]
 events = events[events["type"] != "*main.ClosedStream"]
-events = events[events["type"] != "*main.ConnectedEvent"]
+# events = events[events["type"] != "*main.ConnectedEvent"]
 events = events[events["type"] != "*main.DisconnectedEvent"]
 
 fig = go.Figure()
@@ -85,20 +66,18 @@ def handle_end_event(states, event, color_success, color_error, name, offset):
     if event["has_error"] and states[peer_id]["counter"] != 0:
         return
 
-    if event["time"] - states[peer_id]["time"] < 0.001:  # don't render dial shorter than 1ms
-        states.pop(row["peer_id"])
-        return
-
     color = color_error if has_error else color_success
+
+    offset += 0.08
 
     trace = {
         'time': [states[peer_id]["time"], time],
         'norm_distance': [row["norm_distance"], row["norm_distance"]],
-        'order': [peer_order[peer_id]+offset, peer_order[peer_id]+offset],
+        'order': [peer_order[peer_id] - offset, peer_order[peer_id] - offset],
     }
 
     duration_in_s = time - states[peer_id]["time"]
-    duration_str = "{:.3f}s".format(duration_in_s) if duration_in_s < 1 else "{:.1f}ms".format(duration_in_s * 1000)
+    duration_str = "{:.3f}s".format(duration_in_s) if duration_in_s >= 1 else "{:.1f}ms".format(duration_in_s * 1000)
 
     fig.add_trace(go.Scatter(
         x=trace["time"],
@@ -112,8 +91,8 @@ def handle_end_event(states, event, color_success, color_error, name, offset):
             color=color,
             width=5
         ),
-        hovertemplate="Duration: {:s}<br>Peer ID: {:s}<br>Error: {:s}<br>Extra: {:s}".format(
-            duration_str, peer_id, str(error)[:30] if has_error else "-", str(extra)),
+        hovertemplate="Duration: {:s}<br>Start: {:.3f}<br>Start: {:.3f}<br>Peer ID: {:s}<br>Error: {:s}<br>Extra: {:s}".format(
+            duration_str, states[peer_id]["time"], time, peer_id, str(error)[:30] if has_error else "-", str(extra)),
         showlegend=False
     ))
     states.pop(peer_id)
@@ -123,6 +102,7 @@ dial_states = {}
 message_states = {}
 request_states = {}
 stream_states = {}
+monitor_states = {}
 
 for index, row in events.iterrows():
     peer_id = row["peer_id"]
@@ -136,24 +116,37 @@ for index, row in events.iterrows():
         track_start_event(request_states, peer_id)
 
     elif event_type == "*main.SendRequestEnd":
-        handle_end_event(request_states, row, "green", "lightgreen", "Finding Closer Nodes", 0.45)
+        handle_end_event(request_states, row, "green", "lightgreen", "Finding Closer Nodes", 0.15)
 
     elif event_type == "*main.DialStart":
         track_start_event(dial_states, peer_id)
 
-    elif event_type == "*main.DialEnd":
+    elif event_type == "*main.DialEnd" or event_type == "*main.ConnectedEvent":
         handle_end_event(dial_states, row, "red", "pink", "Dialing Peer", 0)
 
     elif event_type == "*main.OpenStreamStart":
         track_start_event(stream_states, peer_id)
 
-    elif event_type == "*main.OpenStreamEnd":
-        handle_end_event(stream_states, row, "blue", "lightblue", "Opening Stream", 0.15)
+    elif event_type == "*main.OpenStreamEnd" or event_type == "*main.OpenedStream":
+        handle_end_event(stream_states, row, "blue", "lightblue", "Opening Stream", 0.3)
 
     elif event_type == "*main.SendMessageStart":
         track_start_event(message_states, peer_id)
 
     elif event_type == "*main.SendMessageEnd":
-        handle_end_event(message_states, row, "purple", "plum", "Adding Provider", 0.3)
+        handle_end_event(message_states, row, "purple", "plum", "Adding Provider", 0.45)
+
+    elif event_type == "*main.MonitorProviderStart":
+        track_start_event(monitor_states, peer_id)
+
+    elif event_type == "*main.MonitorProviderEnd":
+        handle_end_event(monitor_states, row, "black", "lightgrey", "Monitoring Provider", 0.6)
+
+for i in range(len(ordered_peers)):
+
+    fig.add_annotation(x=min_times[ordered_peers[0]] - 10, y=i + 0.5,
+                       text=ordered_peers[len(ordered_peers) - i - 1][:16], showarrow=False)
+    if i % 2 == 0:
+        fig.add_hrect(y0=i, y1=i + 1, line_width=0, fillcolor="black", opacity=0.1)
 
 fig.show()
