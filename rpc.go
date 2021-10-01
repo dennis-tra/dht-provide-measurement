@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"go.opencensus.io/trace"
 	"io"
 	"sync"
 	"time"
@@ -39,6 +38,7 @@ type messageSenderImpl struct {
 	smlk      sync.Mutex
 	strmap    map[peer.ID]*peerMessageSender
 	protocols []protocol.ID
+	eventHub  *EventHub
 }
 
 func NewMessageSenderImpl(h host.Host, protos []protocol.ID) pb.MessageSender {
@@ -71,19 +71,20 @@ func (m *messageSenderImpl) OnDisconnect(ctx context.Context, p peer.ID) {
 // SendRequest sends out a request, but also makes sure to
 // measure the RTT for latency measurements.
 func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb.Message) (*pb.Message, error) {
-	ctx, _ = tag.New(ctx, metrics.UpsertMessageType(pmes))
-	var span *trace.Span
-	if ctx.Value("realm") == "user" {
-		spanMap.lk.Lock()
-		sme, found := spanMap.m[p]
-		if found {
-			ctx, span = trace.StartSpan(sme.ctx, pmes.Type.String())
-			span.AddAttributes(trace.StringAttribute("peerID", p.Pretty()[:16]))
-			span.AddAttributes(trace.StringAttribute("type", "request"))
-			defer span.End()
-		}
-		spanMap.lk.Unlock()
+	event := &SendRequestEvent{
+		ID:      p,
+		Request: pmes,
+		Start:   time.Now(),
 	}
+
+	defer func() {
+		if isProvideContext(ctx) {
+			event.End = time.Now()
+			m.eventHub.PushEvent(event)
+		}
+	}()
+
+	ctx, _ = tag.New(ctx, metrics.UpsertMessageType(pmes))
 
 	ms, err := m.messageSenderForPeer(ctx, p)
 	if err != nil {
@@ -92,16 +93,12 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentRequestErrors.M(1),
 		)
 		logger.Debugw("request failed to open message sender", "error", err, "to", p)
-		if span != nil {
-			span.SetStatus(trace.Status{
-				Code:    trace.StatusCodeResourceExhausted,
-				Message: err.Error(),
-			})
-		}
+		event.Error = err
 		return nil, err
 	}
 
 	start := time.Now()
+
 	rpmes, err := ms.SendRequest(ctx, pmes)
 	if err != nil {
 		stats.Record(ctx,
@@ -109,14 +106,10 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentRequestErrors.M(1),
 		)
 		logger.Debugw("request failed", "error", err, "to", p)
-		if span != nil {
-			span.SetStatus(trace.Status{
-				Code:    trace.StatusCodeUnavailable,
-				Message: err.Error(),
-			})
-			return nil, err
-		}
+		event.Error = err
+		return nil, err
 	}
+	event.Response = rpmes
 
 	stats.Record(ctx,
 		metrics.SentRequests.M(1),
@@ -129,18 +122,18 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 
 // SendMessage sends out a message
 func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb.Message) error {
-	var span *trace.Span
-	if ctx.Value("realm") == "user" {
-		spanMap.lk.Lock()
-		sme, found := spanMap.m[p]
-		if found {
-			ctx, span = trace.StartSpan(sme.ctx, pmes.Type.String())
-			span.AddAttributes(trace.StringAttribute("peerID", p.Pretty()[:16]))
-			span.AddAttributes(trace.StringAttribute("type", "message"))
-			defer span.End()
-		}
-		spanMap.lk.Unlock()
+	event := &SendMessageEvent{
+		ID:      p,
+		Message: pmes,
+		Start:   time.Now(),
 	}
+
+	defer func() {
+		if isProvideContext(ctx) {
+			event.End = time.Now()
+			m.eventHub.PushEvent(event)
+		}
+	}()
 
 	ctx, _ = tag.New(ctx, metrics.UpsertMessageType(pmes))
 
@@ -151,12 +144,7 @@ func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentMessageErrors.M(1),
 		)
 		logger.Debugw("message failed to open message sender", "error", err, "to", p)
-		if span != nil {
-			span.SetStatus(trace.Status{
-				Code:    trace.StatusCodeResourceExhausted,
-				Message: err.Error(),
-			})
-		}
+		event.Error = err
 		return err
 	}
 
@@ -166,12 +154,7 @@ func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb
 			metrics.SentMessageErrors.M(1),
 		)
 		logger.Debugw("message failed", "error", err, "to", p)
-		if span != nil {
-			span.SetStatus(trace.Status{
-				Code:    trace.StatusCodeUnavailable,
-				Message: err.Error(),
-			})
-		}
+		event.Error = err
 		return err
 	}
 
@@ -238,12 +221,6 @@ func (ms *peerMessageSender) invalidate() {
 }
 
 func (ms *peerMessageSender) prepOrInvalidate(ctx context.Context) error {
-	if ctx.Value("realm") == "user" {
-		_, span := trace.StartSpan(ctx, "prep_or_inval")
-		span.AddAttributes(trace.StringAttribute("peerID", ms.p.Pretty()[:16]))
-		defer span.End()
-	}
-
 	if err := ms.lk.Lock(ctx); err != nil {
 		return err
 	}
@@ -257,7 +234,6 @@ func (ms *peerMessageSender) prepOrInvalidate(ctx context.Context) error {
 }
 
 func (ms *peerMessageSender) prep(ctx context.Context) error {
-
 	if ms.invalid {
 		return fmt.Errorf("message sender has been invalidated")
 	}

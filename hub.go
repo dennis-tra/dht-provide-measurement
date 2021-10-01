@@ -2,110 +2,76 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+
+	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
+
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/routing"
 	"github.com/multiformats/go-multiaddr"
-	"go.opencensus.io/trace"
-	"sync"
+	ma "github.com/multiformats/go-multiaddr"
 )
-
-type EventType string
-
-const (
-	AwaitingUse  EventType = "awaiting_use"
-	SendingQuery EventType = "sending_query"
-	PeerResponse EventType = "peer_response"
-	QueryError   EventType = "query_error"
-	DialingPeer  EventType = "dialing_peer"
-	Connected    EventType = "connected"
-	Disconnected EventType = "disconnected"
-)
-
-func (et EventType) String() string {
-	return string(et)
-}
 
 type EventHub struct {
-	mutex   sync.RWMutex
-	states  map[peer.ID]*PeerState
-	rootCtx context.Context
+	mutex  sync.RWMutex
+	events map[peer.ID][]Event
 }
 
-type PeerState struct {
-	ctx       context.Context
-	span      *trace.Span
-	lastEvent EventType
-	events    []EventType
-	peerCtx   context.Context
+type Event interface {
+	PeerID() peer.ID
 }
 
-func InitEventHub(ctx context.Context, h host.Host) (context.Context, *EventHub) {
+func NewEventHub() *EventHub {
+	return &EventHub{
+		events: map[peer.ID][]Event{},
+	}
+}
+
+func (eh *EventHub) RegisterForEvents(ctx context.Context, h host.Host) {
 	var queryEvents <-chan *routing.QueryEvent
 	ctx, queryEvents = routing.RegisterForQueryEvents(ctx)
 
-	eh := &EventHub{
-		rootCtx: ctx,
-		states:  map[peer.ID]*PeerState{},
-	}
 	h.Network().Notify(eh)
 
 	go eh.handleQueryEvents(queryEvents)
-
-	return ctx, eh
 }
 
-func (eh *EventHub) AddEvent(peerID peer.ID, eventType EventType) {
+func (eh *EventHub) PushEvent(event Event) {
 	eh.mutex.Lock()
 	defer eh.mutex.Unlock()
 
-	eh.ensureSlice(peerID)
-
-	state := eh.currentState(peerID)
-
-	switch state.lastEvent {
-	case AwaitingUse:
-		switch eventType {
-		case DialingPeer:
-			state.span.End()
-			state.ctx, state.span = trace.StartSpan(state.ctx, DialingPeer.String())
-		}
+	events, found := eh.events[event.PeerID()]
+	if !found {
+		eh.events[event.PeerID()] = []Event{}
 	}
+	log.WithField("peerID", event.PeerID().Pretty()[:16]).
+		WithField("event", fmt.Sprintf("%T", event)).
+		Infoln("Pushing Event")
+
+	eh.events[event.PeerID()] = append(events, event)
 }
 
 func (eh *EventHub) handleQueryEvents(queryEvents <-chan *routing.QueryEvent) {
 	for event := range queryEvents {
 		switch event.Type {
 		case routing.SendingQuery:
-			eh.AddEvent(event.ID, SendingQuery)
+			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Sending Query")
 		case routing.PeerResponse:
-			eh.AddEvent(event.ID, PeerResponse)
+			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Received Peer Response")
 		case routing.QueryError:
-			eh.AddEvent(event.ID, QueryError)
+			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Ecountered Query Error")
 		case routing.DialingPeer:
-			eh.AddEvent(event.ID, DialingPeer)
+			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Dialing Peer")
 		default:
 			panic(event.Type)
 		}
 	}
-}
-
-func (eh *EventHub) currentState(peerID peer.ID) *PeerState {
-	state, found := eh.states[peerID]
-	if !found {
-		ctx, span := trace.StartSpan(eh.rootCtx, AwaitingUse.String())
-		span.AddAttributes(trace.StringAttribute("peerID", peerID.Pretty()[:16]))
-		state = &PeerState{
-			peerCtx:   ctx,
-			ctx:       ctx,
-			span:      span,
-			lastEvent: AwaitingUse,
-			events:    []EventType{AwaitingUse},
-		}
-		eh.states[peerID] = state
-	}
-	return state
 }
 
 func (eh *EventHub) ensureSlice(peerID peer.ID) {
@@ -118,15 +84,77 @@ func (eh *EventHub) ListenClose(n network.Network, multiaddr multiaddr.Multiaddr
 }
 
 func (eh *EventHub) Connected(n network.Network, conn network.Conn) {
-	eh.AddEvent(conn.RemotePeer(), Connected)
+	eh.PushEvent(&ConnectedEvent{
+		ID:   conn.RemotePeer(),
+		Time: time.Now(),
+	})
 }
 
 func (eh *EventHub) Disconnected(n network.Network, conn network.Conn) {
-	eh.AddEvent(conn.RemotePeer(), Disconnected)
+	eh.PushEvent(&DisconnectedEvent{
+		ID:   conn.RemotePeer(),
+		Time: time.Now(),
+	})
 }
 
 func (eh *EventHub) OpenedStream(n network.Network, stream network.Stream) {
 }
 
 func (eh *EventHub) ClosedStream(n network.Network, stream network.Stream) {
+}
+
+type DialEvent struct {
+	Transport string
+	ID        peer.ID
+	Maddr     ma.Multiaddr
+	Error     error
+	Start     time.Time
+	End       time.Time
+}
+
+func (e *DialEvent) PeerID() peer.ID {
+	return e.ID
+}
+
+type SendRequestEvent struct {
+	ID       peer.ID
+	Request  *pb.Message
+	Response *pb.Message
+	Error    error
+	Start    time.Time
+	End      time.Time
+}
+
+func (e *SendRequestEvent) PeerID() peer.ID {
+	return e.ID
+}
+
+type SendMessageEvent struct {
+	ID      peer.ID
+	Message *pb.Message
+	Error   error
+	Start   time.Time
+	End     time.Time
+}
+
+func (e *SendMessageEvent) PeerID() peer.ID {
+	return e.ID
+}
+
+type ConnectedEvent struct {
+	ID   peer.ID
+	Time time.Time
+}
+
+func (e *ConnectedEvent) PeerID() peer.ID {
+	return e.ID
+}
+
+type DisconnectedEvent struct {
+	ID   peer.ID
+	Time time.Time
+}
+
+func (e *DisconnectedEvent) PeerID() peer.ID {
+	return e.ID
 }

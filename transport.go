@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"time"
+
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/transport"
 	tptu "github.com/libp2p/go-libp2p-transport-upgrader"
@@ -12,17 +13,33 @@ import (
 )
 
 type TCPTransport struct {
+	eventHub  *EventHub
 	transport *tcp.TcpTransport
 }
 
-func NewTCPTransport(upgrader *tptu.Upgrader) *TCPTransport {
-	return &TCPTransport{
-		transport: tcp.NewTCPTransport(upgrader),
+func NewTCPTransport(eh *EventHub) func(upgrader *tptu.Upgrader) *TCPTransport {
+	return func(upgrader *tptu.Upgrader) *TCPTransport {
+		return &TCPTransport{
+			eventHub:  eh,
+			transport: tcp.NewTCPTransport(upgrader),
+		}
 	}
 }
+
 func (t *TCPTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (transport.CapableConn, error) {
+	start := time.Now()
 	dial, err := t.transport.Dial(ctx, raddr, p)
-	fmt.Println("Dialed with err", err)
+	if isProvideContext(ctx) {
+		event := &DialEvent{
+			Transport: "tcp",
+			ID:        p,
+			Maddr:     raddr,
+			Error:     err,
+			Start:     start,
+			End:       time.Now(),
+		}
+		t.eventHub.PushEvent(event)
+	}
 	return dial, err
 }
 
@@ -43,17 +60,33 @@ func (t *TCPTransport) Proxy() bool {
 }
 
 type WSTransport struct {
+	eventHub  *EventHub
 	transport *websocket.WebsocketTransport
 }
 
-func NewWSTransport(upgrader *tptu.Upgrader) *TCPTransport {
-	return &TCPTransport{
-		transport: tcp.NewTCPTransport(upgrader),
+func NewWSTransport(eh *EventHub) func(upgrader *tptu.Upgrader) *WSTransport {
+	return func(upgrader *tptu.Upgrader) *WSTransport {
+		return &WSTransport{
+			eventHub:  eh,
+			transport: websocket.New(upgrader),
+		}
 	}
 }
+
 func (ws *WSTransport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (transport.CapableConn, error) {
+	start := time.Now()
 	dial, err := ws.transport.Dial(ctx, raddr, p)
-	fmt.Println("WS dialed with err", err)
+	if isProvideContext(ctx) {
+		event := &DialEvent{
+			Transport: "ws",
+			ID:        p,
+			Maddr:     raddr,
+			Error:     err,
+			Start:     start,
+			End:       time.Now(),
+		}
+		ws.eventHub.PushEvent(event)
+	}
 	return dial, err
 }
 

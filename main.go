@@ -12,16 +12,9 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
-	"golang.org/x/sync/errgroup"
 )
 
 type contextKey struct{}
-
-func init() {
-	//if err := ipfslog.SetLogLevel("dht", "DEBUG"); err != nil {
-	//	log.Fatalln(errors.Wrap(err, "set log level"))
-	//}
-}
 
 func withProvideContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, contextKey{}, "provide")
@@ -46,27 +39,9 @@ func main() {
 		log.Fatalln(errors.Wrap(err, "new provider"))
 	}
 
-	//requester, err := NewRequester(ctx)
-	//if err != nil {
-	//	log.Fatalln(errors.Wrap(err, "new requester"))
-	//}
-
-	group, ctx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		return provider.Bootstrap(ctx)
-	})
-	//group.Go(func() error {
-	//	return requester.Bootstrap(ctx)
-	//})
-	if err = group.Wait(); err != nil {
-		log.Fatalln(errors.Wrap(err, "bootstrap err group"))
+	if err = provider.Bootstrap(ctx); err != nil {
+		log.Fatalln(errors.Wrap(err, "bootstrap provider"))
 	}
-
-	// provider.InitRoutingTable() // <- takes a long time
-
-	//if err = requester.MonitorProviders(context.Background(), content); err != nil {
-	//	log.Fatalln(errors.Wrap(err, "monitor provider"))
-	//}
 
 	// To identify all relevant calls we mark this context
 	if err = provider.Provide(withProvideContext(ctx), content); err != nil {

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bou.ke/monkey"
 	"context"
+
+	"bou.ke/monkey"
+
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	"github.com/libp2p/go-libp2p-core/routing"
@@ -14,15 +15,17 @@ import (
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"go.opencensus.io/trace"
 )
 
 type Provider struct {
 	h   host.Host
 	dht *kaddht.IpfsDHT
+	eh  *EventHub
 }
 
 func NewProvider(ctx context.Context) (*Provider, error) {
+	eh := NewEventHub()
+
 	key, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, 256)
 	if err != nil {
 		return nil, errors.Wrap(err, "generate key pair")
@@ -31,6 +34,7 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	ms := &messageSenderImpl{
 		protocols: protocol.ConvertFromStrings([]string{"/ipfs/kad/1.0.0"}),
 		strmap:    make(map[peer.ID]*peerMessageSender),
+		eventHub:  eh,
 	}
 
 	pm, err := pb.NewProtocolMessenger(ms)
@@ -50,8 +54,8 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	var dht *kaddht.IpfsDHT
 	h, err := libp2p.New(ctx,
 		libp2p.Identity(key),
-		libp2p.Transport(NewTCPTransport),
-		libp2p.Transport(NewWSTransport),
+		libp2p.Transport(NewTCPTransport(eh)),
+		libp2p.Transport(NewWSTransport(eh)),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			dht, err = kaddht.New(ctx, h)
 			return dht, err
@@ -61,18 +65,12 @@ func NewProvider(ctx context.Context) (*Provider, error) {
 	}
 	ms.host = h
 
-	notifere := &network.NotifyBundle{
-		ConnectedF: func(n network.Network, conn network.Conn) {
-			log.WithField("id", conn.RemotePeer().Pretty()[:16]).Infoln("Connected!")
-		},
-		OpenedStreamF: func(n network.Network, stream network.Stream) {
-			log.WithField("id", stream.Conn().RemotePeer().Pretty()[:16]).Infoln("Opened stream")
-		},
-	}
-	h.Network().Notify(notifere)
+	eh.RegisterForEvents(ctx, h)
+
 	return &Provider{
 		h:   h,
 		dht: dht,
+		eh:  eh,
 	}, nil
 }
 
@@ -90,38 +88,7 @@ func (p *Provider) InitRoutingTable() {
 	<-p.dht.RefreshRoutingTable()
 }
 
-var spanMap SpanMap
-
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
-	logEntry := log.WithField("type", "provider")
-
-	var span *trace.Span
-	spanMap, span = InitSpanMap(ctx)
-	defer span.End()
-
-	ctx, events := routing.RegisterForQueryEvents(ctx)
-	go func() {
-		logEntry.Infoln("Registered for query")
-		for event := range events {
-			switch event.Type {
-			case routing.SendingQuery:
-				spanMap.SendQuery(event.ID)
-			case routing.PeerResponse:
-				spanMap.PeerResponse(event.ID, event.Responses)
-			case routing.QueryError:
-				spanMap.QueryError(event.ID, event.Extra)
-			case routing.DialingPeer:
-				spanMap.DialingPeer(event.ID)
-			default:
-				panic(event.Type)
-			}
-		}
-		logEntry.Infoln("Registered for query done")
-	}()
-	logEntry.Infoln("Providing content")
-
-	err := p.dht.Provide(ctx, content.contentID, true)
-
-	spanMap.StopSpans()
-	return err
+	log.WithField("type", "provider").Infoln("Providing content")
+	return p.dht.Provide(ctx, content.contentID, true)
 }
