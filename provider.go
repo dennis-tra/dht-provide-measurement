@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"bou.ke/monkey"
 
@@ -89,6 +90,7 @@ func (p *Provider) InitRoutingTable() {
 
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
 	ctx = p.eh.RegisterForEvents(ctx, p.h)
+	p.eh.startTime = time.Now()
 	err := p.dht.Provide(ctx, content.contentID, true)
 	p.eh.Stop(p.h)
 	p.eh.Serialize(content)

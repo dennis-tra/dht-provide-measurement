@@ -65,6 +65,7 @@ for index, row in events.iterrows():
     peer_id = row["peer_id"]
     event_type = row["type"]
     time = row["time"]
+    has_error = row["has_error"]
     error = row["error"]
     extra = row["extra"]
 
@@ -76,6 +77,9 @@ for index, row in events.iterrows():
             }
         else:
             dial_states[peer_id]["counter"] += 1
+    elif event_type == "*main.ConnectedEvent":
+        if peer_id not in dial_states:
+            continue
 
     elif event_type == "*main.DialEnd":
         if peer_id not in dial_states:
@@ -83,14 +87,14 @@ for index, row in events.iterrows():
 
         dial_states[peer_id]["counter"] -= 1
 
-        if error and dial_states[peer_id]["counter"] != 0:
+        if has_error and dial_states[peer_id]["counter"] != 0:
             continue
 
         if time - dial_states[peer_id]["time"] < 0.001:  # don't render dial shorter than 1ms
             dial_states.pop(row["peer_id"])
             continue
 
-        color = "pink" if error else "red"
+        color = "pink" if has_error else "red"
 
         trace = {
             'time': [dial_states[peer_id]["time"], time],
@@ -105,7 +109,7 @@ for index, row in events.iterrows():
         fig.add_trace(go.Scatter(
             x=trace["time"],
             y=trace["order"],
-            name="dial",
+            name="Dialing Peer",
             marker=dict(
                 size=3,
                 color=[color, color]
@@ -116,7 +120,7 @@ for index, row in events.iterrows():
             ),
             hovertemplate="Duration: {:s}<br>Multi Address: {:s}<br>Peer ID: {:s}<br>Error: {:s}".format(
                 duration_str,
-                extra, peer_id, str(error)),
+                extra, peer_id, str(error)[:30] if has_error else "-"),
             showlegend=False
         ))
         dial_states.pop(peer_id)
@@ -130,6 +134,7 @@ for index, row in events.iterrows():
     peer_id = row["peer_id"]
     event_type = row["type"]
     time = row["time"]
+    has_error = row["has_error"]
     error = row["error"]
     extra = row["extra"]
 
@@ -148,14 +153,14 @@ for index, row in events.iterrows():
 
         request_states[peer_id]["counter"] -= 1
 
-        if error and request_states[peer_id]["counter"] != 0:
+        if has_error and request_states[peer_id]["counter"] != 0:
             continue
 
         if time - request_states[peer_id]["time"] < 0.001:  # don't render dial shorter than 1ms
             request_states.pop(row["peer_id"])
             continue
 
-        color = "lightgreen" if error else "green"
+        color = "lightgreen" if has_error else "green"
 
         trace = {
             'time': [request_states[peer_id]["time"], time],
@@ -170,7 +175,7 @@ for index, row in events.iterrows():
         fig.add_trace(go.Scatter(
             x=trace["time"],
             y=trace["order"],
-            name="dial",
+            name="Requesting Peers",
             marker=dict(
                 size=3,
                 color=[color, color]
@@ -180,7 +185,7 @@ for index, row in events.iterrows():
                 width=2
             ),
             hovertemplate="Duration: {:s}<br>Peer ID: {:s}<br>Error: {:s}".format(
-                duration_str, peer_id, str(error)),
+                duration_str, peer_id, str(error)[:30] if has_error else "-"),
             showlegend=False
         ))
         request_states.pop(peer_id)
@@ -192,6 +197,7 @@ for index, row in events.iterrows():
     peer_id = row["peer_id"]
     event_type = row["type"]
     time = row["time"]
+    has_error = row["has_error"]
     error = row["error"]
     extra = row["extra"]
 
@@ -210,19 +216,19 @@ for index, row in events.iterrows():
 
         stream_states[peer_id]["counter"] -= 1
 
-        if error and stream_states[peer_id]["counter"] != 0:
+        if has_error and stream_states[peer_id]["counter"] != 0:
             continue
 
         if time - stream_states[peer_id]["time"] < 0.001:  # don't render dial shorter than 1ms
             stream_states.pop(row["peer_id"])
             continue
 
-        color = "lightblue" if error else "blue"
+        color = "lightblue" if has_error else "blue"
 
         trace = {
             'time': [stream_states[peer_id]["time"], time],
             'norm_distance': [row["norm_distance"], row["norm_distance"]],
-            'order': [peer_order[peer_id]+0.2, peer_order[peer_id]+0.2],
+            'order': [peer_order[peer_id]+0.3, peer_order[peer_id]+0.3],
         }
         duration_s = time - stream_states[peer_id]["time"]
         duration_str = "{:.3f}s".format(duration_s)
@@ -232,7 +238,70 @@ for index, row in events.iterrows():
         fig.add_trace(go.Scatter(
             x=trace["time"],
             y=trace["order"],
-            name="dial",
+            name="Opening Stream",
+            marker=dict(
+                size=3,
+                color=[color, color]
+            ),
+            line=dict(
+                color=color,
+                width=2
+            ),
+            hovertemplate="Duration: {:s}<br>Peer ID: {:s}<br>Error: {:s}<br>Protocols: {:s}".format(
+                duration_str, peer_id, str(error)[:30] if has_error else "-", extra),
+            showlegend=False
+        ))
+        stream_states.pop(peer_id)
+
+message_states = {}
+
+# Plot Open Stream!
+for index, row in events.iterrows():
+    peer_id = row["peer_id"]
+    event_type = row["type"]
+    time = row["time"]
+    has_error = row["has_error"]
+    error = row["error"]
+    extra = row["extra"]
+
+    if event_type == "*main.SendMessageStart":
+        if peer_id not in message_states:
+            message_states[peer_id] = {
+                "time": time,
+                "counter": 1,
+            }
+        else:
+            dial_states[peer_id]["counter"] += 1
+
+    elif event_type == "*main.SendMessageEnd":
+        if peer_id not in message_states:
+            continue
+
+        message_states[peer_id]["counter"] -= 1
+
+        if has_error and message_states[peer_id]["counter"] != 0:
+            continue
+
+        if time - message_states[peer_id]["time"] < 0.001:  # don't render dial shorter than 1ms
+            message_states.pop(row["peer_id"])
+            continue
+
+        color = "plum" if has_error else "purple"
+
+        trace = {
+            'time': [message_states[peer_id]["time"], time],
+            'norm_distance': [row["norm_distance"], row["norm_distance"]],
+            'order': [peer_order[peer_id]+0.2, peer_order[peer_id]+0.2],
+        }
+        duration_s = time - message_states[peer_id]["time"]
+        duration_str = "{:.3f}s".format(duration_s)
+        if duration_s < 1:
+            duration_str = "{:.1f}ms".format(duration_s * 1000)
+
+        fig.add_trace(go.Scatter(
+            x=trace["time"],
+            y=trace["order"],
+            name="Adding Provider",
             marker=dict(
                 size=3,
                 color=[color, color]
@@ -242,9 +311,10 @@ for index, row in events.iterrows():
                 width=2
             ),
             hovertemplate="Duration: {:s}<br>Peer ID: {:s}<br>Error: {:s}".format(
-                duration_str, peer_id, str(error)),
+                duration_str, peer_id, str(error)[:30] if has_error else "-"),
             showlegend=False
         ))
-        stream_states.pop(peer_id)
+        message_states.pop(peer_id)
+
 # fig.update_yaxes(type="log")
 fig.show()

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,10 +46,9 @@ type Event interface {
 
 func NewEventHub() *EventHub {
 	return &EventHub{
-		startTime: time.Now(),
-		events:    map[peer.ID][]Event{},
-		relevant:  sync.Map{},
-		stopped:   atomic.NewBool(false),
+		events:   map[peer.ID][]Event{},
+		relevant: sync.Map{},
+		stopped:  atomic.NewBool(false),
 	}
 }
 
@@ -101,6 +101,7 @@ func (eh *EventHub) Serialize(content *Content) {
 		"distance",
 		"time",
 		"type",
+		"has_error",
 		"error",
 		"extra",
 	})
@@ -114,6 +115,10 @@ func (eh *EventHub) Serialize(content *Content) {
 				extra = event.Maddr.String()
 			case *DialEnd:
 				extra = event.Maddr.String()
+			case *OpenStreamStart:
+				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
+			case *OpenStreamEnd:
+				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
 			case *OpenedStream:
 				extra = protocol.ConvertToStrings([]protocol.ID{event.Protocol})[0]
 			case *ClosedStream:
@@ -129,12 +134,17 @@ func (eh *EventHub) Serialize(content *Content) {
 			case *DiscoveredPeer:
 				extra = hex.EncodeToString(u.XOR(kbucket.ConvertPeerID(event.Discovered), kbucket.ConvertKey(string(content.mhash))))
 			}
+			errorStr := ""
+			if evt.Error() != nil {
+				errorStr = evt.Error().Error()
+			}
 			w.Write([]string{
 				peerID.Pretty(),
 				hex.EncodeToString(distance),
 				fmt.Sprintf("%.4f", evt.TimeStamp().Sub(eh.startTime).Seconds()),
 				fmt.Sprintf("%T", evt),
 				fmt.Sprintf("%t", evt.Error() != nil),
+				errorStr,
 				extra,
 			})
 		}
@@ -285,6 +295,7 @@ func (e *SendMessageEnd) Error() error {
 
 type OpenStreamStart struct {
 	BaseEvent
+	Protocols []protocol.ID
 }
 
 func (e *OpenStreamStart) Error() error {
@@ -293,7 +304,8 @@ func (e *OpenStreamStart) Error() error {
 
 type OpenStreamEnd struct {
 	BaseEvent
-	Err error
+	Err       error
+	Protocols []protocol.ID
 }
 
 func (e *OpenStreamEnd) Error() error {

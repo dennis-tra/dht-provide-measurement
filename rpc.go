@@ -268,12 +268,14 @@ func (ms *peerMessageSender) prep(ctx context.Context) error {
 				ID:   ms.p,
 				Time: time.Now(),
 			},
+			Protocols: ms.m.protocols,
 		})
 	}
 	endEvent := &OpenStreamEnd{
 		BaseEvent: BaseEvent{
 			ID: ms.p,
 		},
+		Protocols: ms.m.protocols,
 	}
 	defer func() {
 		if isProvideContext(ctx) {
