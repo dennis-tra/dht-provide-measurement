@@ -71,34 +71,30 @@ func (m *messageSenderImpl) OnDisconnect(ctx context.Context, p peer.ID) {
 // SendRequest sends out a request, but also makes sure to
 // measure the RTT for latency measurements.
 func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb.Message) (*pb.Message, error) {
-	if isProvideContext(ctx) {
-		m.eventHub.PushEvent(&SendRequestStart{
-			BaseEvent: BaseEvent{
-				ID:   p,
-				Time: time.Now(),
-			},
-			Request: pmes,
-		})
-	}
+	m.eventHub.PushEvent(&SendRequestStart{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Request: pmes,
+	})
 	endEvent := &SendRequestEnd{
 		BaseEvent: BaseEvent{
 			ID: p,
 		},
 	}
 	defer func() {
-		if isProvideContext(ctx) {
-			endEvent.Time = time.Now()
-			m.eventHub.PushEvent(endEvent)
-			if endEvent.Error() == nil && endEvent.Response.Type == pb.Message_FIND_NODE {
-				for _, pi := range pb.PBPeersToPeerInfos(endEvent.Response.CloserPeers) {
-					m.eventHub.PushEvent(&DiscoveredPeer{
-						BaseEvent: BaseEvent{
-							ID:   p,
-							Time: time.Now(),
-						},
-						Discovered: pi.ID,
-					})
-				}
+		endEvent.Time = time.Now()
+		m.eventHub.PushEvent(endEvent)
+		if endEvent.Error() == nil && endEvent.Response.Type == pb.Message_FIND_NODE {
+			for _, pi := range pb.PBPeersToPeerInfos(endEvent.Response.CloserPeers) {
+				m.eventHub.PushEvent(&DiscoveredPeer{
+					BaseEvent: BaseEvent{
+						ID:   p,
+						Time: time.Now(),
+					},
+					Discovered: pi.ID,
+				})
 			}
 		}
 	}()
@@ -141,25 +137,21 @@ func (m *messageSenderImpl) SendRequest(ctx context.Context, p peer.ID, pmes *pb
 
 // SendMessage sends out a message
 func (m *messageSenderImpl) SendMessage(ctx context.Context, p peer.ID, pmes *pb.Message) error {
-	if isProvideContext(ctx) {
-		m.eventHub.PushEvent(&SendMessageStart{
-			BaseEvent: BaseEvent{
-				ID:   p,
-				Time: time.Now(),
-			},
-			Message: pmes,
-		})
-	}
+	m.eventHub.PushEvent(&SendMessageStart{
+		BaseEvent: BaseEvent{
+			ID:   p,
+			Time: time.Now(),
+		},
+		Message: pmes,
+	})
 	endEvent := &SendMessageEnd{
 		BaseEvent: BaseEvent{
 			ID: p,
 		},
 	}
 	defer func() {
-		if isProvideContext(ctx) {
-			endEvent.Time = time.Now()
-			m.eventHub.PushEvent(endEvent)
-		}
+		endEvent.Time = time.Now()
+		m.eventHub.PushEvent(endEvent)
 	}()
 
 	ctx, _ = tag.New(ctx, metrics.UpsertMessageType(pmes))
@@ -262,15 +254,13 @@ func (ms *peerMessageSender) prepOrInvalidate(ctx context.Context) error {
 }
 
 func (ms *peerMessageSender) prep(ctx context.Context) error {
-	if isProvideContext(ctx) {
-		ms.eh.PushEvent(&OpenStreamStart{
-			BaseEvent: BaseEvent{
-				ID:   ms.p,
-				Time: time.Now(),
-			},
-			Protocols: ms.m.protocols,
-		})
-	}
+	ms.eh.PushEvent(&OpenStreamStart{
+		BaseEvent: BaseEvent{
+			ID:   ms.p,
+			Time: time.Now(),
+		},
+		Protocols: ms.m.protocols,
+	})
 	endEvent := &OpenStreamEnd{
 		BaseEvent: BaseEvent{
 			ID: ms.p,
@@ -278,10 +268,8 @@ func (ms *peerMessageSender) prep(ctx context.Context) error {
 		Protocols: ms.m.protocols,
 	}
 	defer func() {
-		if isProvideContext(ctx) {
-			endEvent.Time = time.Now()
-			ms.eh.PushEvent(endEvent)
-		}
+		endEvent.Time = time.Now()
+		ms.eh.PushEvent(endEvent)
 	}()
 	if ms.invalid {
 		err := fmt.Errorf("message sender has been invalidated")

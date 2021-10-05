@@ -24,9 +24,7 @@ type Provider struct {
 	eh  *EventHub
 }
 
-func NewProvider(ctx context.Context) (*Provider, error) {
-	eh := NewEventHub()
-
+func NewProvider(ctx context.Context, eh *EventHub) (*Provider, error) {
 	key, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, 256)
 	if err != nil {
 		return nil, errors.Wrap(err, "generate key pair")
@@ -89,10 +87,13 @@ func (p *Provider) InitRoutingTable() {
 }
 
 func (p *Provider) Provide(ctx context.Context, content *Content) error {
-	ctx = p.eh.RegisterForEvents(ctx, p.h)
-	p.eh.startTime = time.Now()
-	err := p.dht.Provide(ctx, content.contentID, true)
-	p.eh.Stop(p.h)
-	p.eh.Serialize(content)
+	ctx = p.eh.Start(ctx, p.h)
+	err := p.dht.Provide(ctx, content.cid, true)
+	go func() {
+		<-time.After(5 * time.Second)
+		log.Infoln("Serializing events")
+		p.eh.Stop(p.h)
+		p.eh.Serialize(content)
+	}()
 	return err
 }

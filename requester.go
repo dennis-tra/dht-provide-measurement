@@ -22,14 +22,17 @@ type Requester struct {
 	h   host.Host
 	dht *kaddht.IpfsDHT
 	pm  *pb.ProtocolMessenger
+	eh  *EventHub
 }
 
-func NewRequester(ctx context.Context) (*Requester, error) {
+func NewRequester(ctx context.Context, eh *EventHub) (*Requester, error) {
+	// Generate a new identity
 	key, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, 256)
 	if err != nil {
 		return nil, errors.Wrap(err, "generate key pair")
 	}
 
+	// Initialize a new libp2p host with the above identity
 	var dht *kaddht.IpfsDHT
 	h, err := libp2p.New(ctx,
 		libp2p.Identity(key),
@@ -55,23 +58,25 @@ func NewRequester(ctx context.Context) (*Requester, error) {
 		h:   h,
 		dht: dht,
 		pm:  pm,
+		eh:  eh,
 	}, nil
 }
 
-func (p *Requester) Bootstrap(ctx context.Context) error {
+func (r *Requester) Bootstrap(ctx context.Context) error {
 	for _, bp := range kaddht.GetDefaultBootstrapPeerAddrInfos() {
 		log.WithField("type", "requester").Infoln("Connecting to bootstrap peer")
-		if err := p.h.Connect(ctx, bp); err != nil {
+		if err := r.h.Connect(ctx, bp); err != nil {
 			return errors.Wrap(err, "connecting to bootstrap peer")
 		}
 	}
 	return nil
 }
 
-func (p *Requester) MonitorProviders(ctx context.Context, content *Content, eh *EventHub) error {
+func (r *Requester) MonitorProviders(ctx context.Context, content *Content) error {
 	logEntry := log.WithField("type", "requester")
+
 	logEntry.Infoln("Getting closest peers")
-	closest, err := p.dht.GetClosestPeers(ctx, string(content.contentID.Hash()))
+	closest, err := r.dht.GetClosestPeers(ctx, string(content.cid.Hash()))
 	if err != nil {
 		return errors.Wrap(err, "get closest peers")
 	}
@@ -82,51 +87,44 @@ func (p *Requester) MonitorProviders(ctx context.Context, content *Content, eh *
 		logEntry.Infoln("Querying closest peers for provider records")
 		var wg sync.WaitGroup
 		for _, c := range closest {
+			log.WithField("targetID", c.Pretty()[:16]).Infoln("Mark as relevant")
+			r.eh.MarkAsRelevant(c)
 			wg.Add(1)
 			go func(peerID peer.ID) {
 				defer wg.Done()
 
 				logEntry2 := logEntry.WithField("targetID", peerID.Pretty()[:16]).WithField("count", len(closest))
 
-				for range time.Tick(time.Second) {
+				for range time.Tick(time.Millisecond * 500) {
 					logEntry2.Infoln("Getting providers...")
 
-					eh.PushEvent(&MonitorProviderStart{
+					r.eh.PushEvent(&MonitorProviderStart{
 						BaseEvent: BaseEvent{
 							ID:   peerID,
 							Time: time.Now(),
 						},
 					})
-					provs, _, err := p.pm.GetProviders(ctx, peerID, content.mhash)
+
+					provs, _, err := r.pm.GetProviders(ctx, peerID, content.mhash)
+					eevent := &MonitorProviderEnd{
+						BaseEvent: BaseEvent{
+							ID:   peerID,
+							Time: time.Now(),
+						},
+					}
 					if err != nil {
 						logEntry2.WithError(err).Warnln("Could not get providers")
-						eh.PushEvent(&MonitorProviderEnd{
-							BaseEvent: BaseEvent{
-								ID:   peerID,
-								Time: time.Now(),
-							},
-							Err: err,
-						})
+						eevent.Err = err
+						r.eh.PushEvent(eevent)
 						return
-					}
-					if len(provs) > 0 {
-						eh.PushEvent(&MonitorProviderEnd{
-							BaseEvent: BaseEvent{
-								ID:   peerID,
-								Time: time.Now(),
-							},
-						})
+					} else if len(provs) > 0 {
+						r.eh.PushEvent(eevent)
 						logEntry2.Infoln("Found provider record!")
 						return
-					} else {
-						eh.PushEvent(&MonitorProviderEnd{
-							BaseEvent: BaseEvent{
-								ID:   peerID,
-								Time: time.Now(),
-							},
-							Err: fmt.Errorf("not found"),
-						})
 					}
+
+					eevent.Err = fmt.Errorf("not found")
+					r.eh.PushEvent(eevent)
 				}
 			}(c)
 		}

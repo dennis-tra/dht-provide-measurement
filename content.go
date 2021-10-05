@@ -9,12 +9,14 @@ import (
 	"github.com/pkg/errors"
 )
 
+// Content encapsulates multiple representations of the same data.
 type Content struct {
-	raw       []byte
-	mhash     mh.Multihash
-	contentID cid.Cid
+	raw   []byte
+	mhash mh.Multihash
+	cid   cid.Cid
 }
 
+// NewRandomContent reads 1024 bytes from crypto/rand and builds a content struct.
 func NewRandomContent() (*Content, error) {
 	raw := make([]byte, 1024)
 	_, err := rand.Read(raw)
@@ -30,8 +32,8 @@ func NewRandomContent() (*Content, error) {
 	}
 
 	return &Content{
-		raw:       raw,
-		mhash:     mhash,
-		contentID: cid.NewCidV0(mhash),
+		raw:   raw,
+		mhash: mhash,
+		cid:   cid.NewCidV0(mhash),
 	}, nil
 }

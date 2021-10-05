@@ -12,6 +12,8 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 )
 
+// TCPTransport is a thin wrapper around the actual *tcp.TcpTransport implementation.
+// It intercepts calls to Dial to track when which peer is dialed.
 type TCPTransport struct {
 	eventHub  *EventHub
 	transport *tcp.TcpTransport
@@ -64,6 +66,8 @@ func (t *TCPTransport) Proxy() bool {
 	return t.transport.Proxy()
 }
 
+// WSTransport is a thin wrapper around the actual *websocket.WebsocketTransport
+// implementation. It intercepts calls to Dial to track when which peer is dialed.
 type WSTransport struct {
 	eventHub  *EventHub
 	transport *websocket.WebsocketTransport

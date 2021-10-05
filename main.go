@@ -16,34 +16,31 @@ import (
 	"go.opencensus.io/trace"
 )
 
-func withProvideContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, "provide-context", true)
-}
-
-func isProvideContext(ctx context.Context) bool {
-	val := ctx.Value("provide-context")
-	return val == true
-}
-
 func main() {
 	ctx := context.Background()
 
+	// Generate random content that we'll provide in the DHT.
 	content, err := NewRandomContent()
 	if err != nil {
 		log.Fatalln(errors.Wrap(err, "new random content"))
 	}
-	log.WithField("cid", content.contentID.String()).Infof("Generated content")
+	log.WithField("cid", content.cid.String()).Infof("Generated content")
 
-	provider, err := NewProvider(ctx)
-	if err != nil {
-		log.Fatalln(errors.Wrap(err, "new provider"))
-	}
+	eh := NewEventHub()
 
-	requester, err := NewRequester(ctx)
+	// Construct the requester (must come before new provider due to monkey patching)
+	requester, err := NewRequester(ctx, eh)
 	if err != nil {
 		log.Fatalln(errors.Wrap(err, "new requester"))
 	}
 
+	// Construct the provider libp2p host
+	provider, err := NewProvider(ctx, eh)
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "new provider"))
+	}
+
+	// Bootstrap both libp2p hosts by connecting the canonical bootstrap peers.
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		return provider.Bootstrap(ctx)
@@ -55,10 +52,12 @@ func main() {
 		log.Fatalln(errors.Wrap(err, "bootstrap err group"))
 	}
 
-	if err = requester.MonitorProviders(context.Background(), content, provider.eh); err != nil {
+	// Start pinging the closest peers to the random content from above for provider records.
+	if err = requester.MonitorProviders(context.Background(), content); err != nil {
 		log.Fatalln(errors.Wrap(err, "monitor provider"))
 	}
 
+	// Provide the random content from above.
 	if err = provider.Provide(context.Background(), content); err != nil {
 		log.Fatalln(errors.Wrap(err, "provide"))
 	}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p-core/routing"
+
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
 
 	"github.com/libp2p/go-libp2p-core/protocol"
@@ -19,14 +21,10 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
-
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/routing"
 	"github.com/multiformats/go-multiaddr"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 type EventHub struct {
@@ -36,12 +34,6 @@ type EventHub struct {
 	stopped   *atomic.Bool
 	startTime time.Time
 	stopTime  time.Time
-}
-
-type Event interface {
-	PeerID() peer.ID
-	TimeStamp() time.Time
-	Error() error
 }
 
 func NewEventHub() *EventHub {
@@ -56,19 +48,8 @@ func (eh *EventHub) MarkAsRelevant(peerID peer.ID) {
 	eh.relevant.Store(peerID, struct{}{})
 }
 
-func (eh *EventHub) RegisterForEvents(ctx context.Context, h host.Host) context.Context {
-	var queryEvents <-chan *routing.QueryEvent
-	ctx, queryEvents = routing.RegisterForQueryEvents(ctx)
-
-	h.Network().Notify(eh)
-
-	go eh.handleQueryEvents(queryEvents)
-
-	return withProvideContext(ctx)
-}
-
 func (eh *EventHub) PushEvent(event Event) {
-	if eh.stopped.Load() {
+	if eh == nil || eh.stopped.Load() {
 		return
 	}
 
@@ -79,75 +60,24 @@ func (eh *EventHub) PushEvent(event Event) {
 	if !found {
 		eh.events[event.PeerID()] = []Event{}
 	}
-	log.WithField("peerID", event.PeerID().Pretty()[:16]).
-		WithField("event", fmt.Sprintf("%T", event)).
-		Infoln("Pushing Event")
+	// log.WithField("peerID", event.PeerID().Pretty()[:16]).
+	//	WithField("event", fmt.Sprintf("%T", event)).
+	//	Infoln("Pushing Event")
 
 	eh.events[event.PeerID()] = append(events, event)
 }
 
-func (eh *EventHub) Serialize(content *Content) {
-	f, err := os.Create("plot_data.csv")
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer f.Close()
+func (eh *EventHub) Start(ctx context.Context, h host.Host) context.Context {
+	eh.startTime = time.Now()
+	h.Network().Notify(eh)
+	ctx, queryEvents := routing.RegisterForQueryEvents(ctx)
+	go eh.handleQueryEvents(queryEvents)
+	return ctx
+}
 
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	w.Write([]string{
-		"peer_id",
-		"distance",
-		"time",
-		"type",
-		"has_error",
-		"error",
-		"extra",
-	})
-	for peerID, events := range eh.events {
-		distance := u.XOR(kbucket.ConvertPeerID(peerID), kbucket.ConvertKey(string(content.mhash)))
-
-		for _, evt := range events {
-			extra := ""
-			switch event := evt.(type) {
-			case *DialStart:
-				extra = event.Maddr.String()
-			case *DialEnd:
-				extra = event.Maddr.String()
-			case *OpenStreamStart:
-				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
-			case *OpenStreamEnd:
-				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
-			case *OpenedStream:
-				extra = protocol.ConvertToStrings([]protocol.ID{event.Protocol})[0]
-			case *ClosedStream:
-				extra = protocol.ConvertToStrings([]protocol.ID{event.Protocol})[0]
-			case *SendRequestStart:
-				extra = event.Request.Type.String()
-			case *SendRequestEnd:
-				if event.Err == nil {
-					extra = event.Response.Type.String()
-				}
-			case *SendMessageStart:
-				extra = event.Message.Type.String()
-			case *DiscoveredPeer:
-				extra = hex.EncodeToString(u.XOR(kbucket.ConvertPeerID(event.Discovered), kbucket.ConvertKey(string(content.mhash))))
-			}
-			errorStr := ""
-			if evt.Error() != nil {
-				errorStr = evt.Error().Error()
-			}
-			w.Write([]string{
-				peerID.Pretty(),
-				hex.EncodeToString(distance),
-				fmt.Sprintf("%.4f", evt.TimeStamp().Sub(eh.startTime).Seconds()),
-				fmt.Sprintf("%T", evt),
-				fmt.Sprintf("%t", evt.Error() != nil),
-				errorStr,
-				extra,
-			})
-		}
+func (eh *EventHub) handleQueryEvents(queryEvents <-chan *routing.QueryEvent) {
+	for event := range queryEvents {
+		eh.MarkAsRelevant(event.ID)
 	}
 }
 
@@ -155,35 +85,21 @@ func (eh *EventHub) Stop(h host.Host) {
 	eh.stopped.Store(true)
 	eh.stopTime = time.Now()
 
-	h.Network().StopNotify(eh)
-
 	eh.mutex.Lock()
 	defer eh.mutex.Unlock()
 
+	h.Network().StopNotify(eh)
+
+	// Since we collected all Dials and whatnot we filter the events
+	// for peer IDs that were used for getting the closest peers in
+	// the call to dht.Provide. Those relevant peers are marked as
+	// relevant in the handleQueryEvents method.
 	relevant := map[peer.ID][]Event{}
 	eh.relevant.Range(func(key, value interface{}) bool {
 		relevant[key.(peer.ID)] = eh.events[key.(peer.ID)]
 		return true
 	})
 	eh.events = relevant
-}
-
-func (eh *EventHub) handleQueryEvents(queryEvents <-chan *routing.QueryEvent) {
-	for event := range queryEvents {
-		eh.MarkAsRelevant(event.ID)
-		switch event.Type {
-		case routing.SendingQuery:
-			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Sending Query")
-		case routing.PeerResponse:
-			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Received Peer Response")
-		case routing.QueryError:
-			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Encountered Query Error")
-		case routing.DialingPeer:
-			log.WithField("peerID", event.ID.Pretty()[:16]).Infoln("Dialing Peer")
-		default:
-			panic(event.Type)
-		}
-	}
 }
 
 func (eh *EventHub) Listen(n network.Network, multiaddr multiaddr.Multiaddr) {
@@ -230,120 +146,68 @@ func (eh *EventHub) ClosedStream(n network.Network, stream network.Stream) {
 	})
 }
 
-type BaseEvent struct {
-	ID   peer.ID
-	Time time.Time
-}
+func (eh *EventHub) Serialize(content *Content) {
+	f, err := os.Create("events.csv")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer f.Close()
 
-func (e *BaseEvent) PeerID() peer.ID {
-	return e.ID
-}
+	w := csv.NewWriter(f)
+	defer w.Flush()
 
-func (e *BaseEvent) TimeStamp() time.Time {
-	return e.Time
-}
+	// Write header
+	w.Write([]string{
+		"peer_id",
+		"distance",
+		"time",
+		"type",
+		"has_error",
+		"error",
+		"extra",
+	})
+	for peerID, events := range eh.events {
+		distance := u.XOR(kbucket.ConvertPeerID(peerID), kbucket.ConvertKey(string(content.mhash)))
 
-func (e *BaseEvent) Error() error {
-	return nil
-}
-
-type DialStart struct {
-	BaseEvent
-	Transport string
-	Maddr     ma.Multiaddr
-}
-
-type DialEnd struct {
-	BaseEvent
-	Transport string
-	Maddr     ma.Multiaddr
-	Err       error
-}
-
-func (e *DialEnd) Error() error {
-	return e.Err
-}
-
-type SendRequestStart struct {
-	BaseEvent
-	Request *pb.Message
-}
-
-type SendRequestEnd struct {
-	BaseEvent
-	Response *pb.Message
-	Err      error
-}
-
-func (e *SendRequestEnd) Error() error {
-	return e.Err
-}
-
-type SendMessageStart struct {
-	BaseEvent
-	Message *pb.Message
-}
-
-type SendMessageEnd struct {
-	BaseEvent
-	Err error
-}
-
-func (e *SendMessageEnd) Error() error {
-	return e.Err
-}
-
-type OpenStreamStart struct {
-	BaseEvent
-	Protocols []protocol.ID
-}
-
-func (e *OpenStreamStart) Error() error {
-	return nil
-}
-
-type OpenStreamEnd struct {
-	BaseEvent
-	Err       error
-	Protocols []protocol.ID
-}
-
-func (e *OpenStreamEnd) Error() error {
-	return e.Err
-}
-
-type ConnectedEvent struct {
-	BaseEvent
-}
-
-type DisconnectedEvent struct {
-	BaseEvent
-}
-
-type OpenedStream struct {
-	BaseEvent
-	Protocol protocol.ID
-}
-
-type ClosedStream struct {
-	BaseEvent
-	Protocol protocol.ID
-}
-
-type DiscoveredPeer struct {
-	BaseEvent
-	Discovered peer.ID
-}
-
-type MonitorProviderStart struct {
-	BaseEvent
-}
-
-type MonitorProviderEnd struct {
-	BaseEvent
-	Err error
-}
-
-func (e *MonitorProviderEnd) Error() error {
-	return e.Err
+		for _, evt := range events {
+			extra := ""
+			switch event := evt.(type) {
+			case *DialStart:
+				extra = event.Maddr.String()
+			case *DialEnd:
+				extra = event.Maddr.String()
+			case *OpenStreamStart:
+				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
+			case *OpenStreamEnd:
+				extra = strings.Join(protocol.ConvertToStrings(event.Protocols), ",")
+			case *OpenedStream:
+				extra = protocol.ConvertToStrings([]protocol.ID{event.Protocol})[0]
+			case *ClosedStream:
+				extra = protocol.ConvertToStrings([]protocol.ID{event.Protocol})[0]
+			case *SendRequestStart:
+				extra = event.Request.Type.String()
+			case *SendRequestEnd:
+				if event.Err == nil {
+					extra = event.Response.Type.String()
+				}
+			case *SendMessageStart:
+				extra = event.Message.Type.String()
+			case *DiscoveredPeer:
+				extra = hex.EncodeToString(u.XOR(kbucket.ConvertPeerID(event.Discovered), kbucket.ConvertKey(string(content.mhash))))
+			}
+			errorStr := ""
+			if evt.Error() != nil {
+				errorStr = strings.ReplaceAll(evt.Error().Error(), "\n", " ")
+			}
+			w.Write([]string{
+				peerID.Pretty(),
+				hex.EncodeToString(distance),
+				fmt.Sprintf("%.6f", evt.TimeStamp().Sub(eh.startTime).Seconds()),
+				fmt.Sprintf("%T", evt),
+				fmt.Sprintf("%t", evt.Error() != nil),
+				errorStr,
+				extra,
+			})
+		}
+	}
 }
